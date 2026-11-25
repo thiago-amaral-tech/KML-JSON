@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Conversor KML para JSON</title>
+<title>Conversor KML para JSON (Múltiplos Arquivos)</title>
 
 <style>
   :root {
@@ -116,6 +116,7 @@
     margin-top: 16px;
     font-size: 14px;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .status.error { color: var(--danger); }
@@ -202,42 +203,43 @@
 
   <header class="header">
     <h1>Conversor KML para JSON</h1>
-    <p>Importe um arquivo KML e exporte os pontos em um arquivo JSON estruturado.</p>
+    <p>Importe um ou mais arquivos KML e combine todos os pontos em um único arquivo JSON.</p>
   </header>
 
   <section class="panel">
 
     <div class="dropzone" id="dropzone">
-      <strong>Selecione ou arraste seu arquivo KML</strong>
-      <p>Os dados serão processados diretamente no seu navegador.</p>
+      <strong>Selecione ou arraste seus arquivos KML</strong>
+      <p>Você pode escolher vários arquivos de uma vez para unir em um único JSON.</p>
 
       <label class="btn btn-primary" for="kmlFile">
-        Escolher arquivo KML
+        Escolher arquivos KML
       </label>
 
       <input
         id="kmlFile"
         type="file"
+        multiple
       >
     </div>
 
     <div class="actions">
       <button class="btn btn-primary" id="downloadBtn" disabled>
-        Baixar JSON
+        Baixar JSON único
       </button>
 
       <button class="btn btn-secondary" id="clearBtn" type="button">
-        Limpar
+        Limpar tudo
       </button>
     </div>
 
     <div class="status" id="status" aria-live="polite">
-      Aguardando arquivo KML.
+      Aguardando arquivo(s) KML.
     </div>
 
     <div class="summary">
-      <h2>Pré-visualização dos registros</h2>
-      <span class="count" id="count">0 registros</span>
+      <h2>Pré-visualização dos registros combinados</h2>
+      <span class="count" id="count">0 registros (0 arquivos)</span>
     </div>
 
     <div class="table-wrap">
@@ -262,7 +264,7 @@
     </div>
 
     <p class="hint">
-      Exporta <strong>equipamentos.json</strong> em UTF-8 com <code>equipamento</code>, <code>circuito</code>,
+      Exporta um único <strong>equipamentos.json</strong> em UTF-8 com <code>equipamento</code>, <code>circuito</code>,
       <code>latitude</code> e <code>longitude</code>. Remove registros com <code>CO-</code>, simplifica zeros à esquerda
       (ex.: <code>AA-000001</code> → <code>AA-1</code>) e separa circuitos no formato <code>BBB-0001</code> do nome.
     </p>
@@ -282,6 +284,8 @@
   const dropzone = document.getElementById('dropzone');
 
   let records = [];
+  let loadedFiles = [];
+  let totalRemovedCo = 0;
 
   function setStatus(message, type = '') {
     statusEl.textContent = message;
@@ -304,7 +308,6 @@
     return String(equipamento || '').toUpperCase().includes('CO-');
   }
 
-  // Remove zeros à esquerda em identificadores com hífen (ex.: AA-000001 -> AA-1)
   function stripLeadingZerosFromCode(text) {
     return String(text || '').replace(
       /([A-Za-z0-9]+-)0*(\d+)/g,
@@ -312,8 +315,6 @@
     );
   }
 
-  // Extrai circuito no padrão 3 letras maiúsculas + até 4 dígitos (ex.: BBB-0001) do <name>
-  // e devolve equipamento simplificado + circuito separado
   function parseNameAndCircuit(rawName, rawDescription) {
     const cleanName = String(rawName || '').trim().replace(/\s+/g, ' ');
     const cleanDesc = String(rawDescription || '').trim();
@@ -342,7 +343,7 @@
     const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
 
     if (xml.getElementsByTagName('parsererror').length) {
-      throw new Error('O arquivo não parece ser um KML/XML válido.');
+      throw new Error('Arquivo não parece ser um KML/XML válido.');
     }
 
     const placemarks = Array.from(xml.getElementsByTagNameNS('*', 'Placemark'));
@@ -388,20 +389,13 @@
       }
     });
 
-    if (!result.length) {
-      throw new Error(
-        removedCoCount > 0
-          ? `Todos os ${removedCoCount} registro(s) encontrados continham "CO-" e foram removidos.`
-          : 'Nenhum registro com nome, descrição ou coordenadas foi encontrado no KML.'
-      );
-    }
-
     return { records: result, removedCoCount };
   }
 
   function renderTable() {
-    countEl.textContent =
-      records.length + (records.length === 1 ? ' registro' : ' registros');
+    const regLabel = records.length === 1 ? 'registro' : 'registros';
+    const fileLabel = loadedFiles.length === 1 ? 'arquivo' : 'arquivos';
+    countEl.textContent = `${records.length} ${regLabel} (${loadedFiles.length} ${fileLabel})`;
 
     if (!records.length) {
       tableBody.innerHTML =
@@ -432,37 +426,56 @@
     downloadBtn.disabled = false;
   }
 
-  function loadFile(file) {
-    if (!file) return;
+  function readSingleFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error(`Erro ao ler "${file.name}".`));
+      reader.readAsText(file, 'UTF-8');
+    });
+  }
 
-    const reader = new FileReader();
+  async function loadFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
 
-    reader.onload = () => {
+    let addedCount = 0;
+    const errors = [];
+
+    for (const file of files) {
       try {
-        const parsed = parseKml(String(reader.result));
-        records = parsed.records;
-        renderTable();
+        const content = await readSingleFile(file);
+        const parsed = parseKml(content);
+        records = records.concat(parsed.records);
+        totalRemovedCo += parsed.removedCoCount;
+        addedCount += parsed.records.length;
 
-        const extraInfo = parsed.removedCoCount > 0
-          ? ` (${parsed.removedCoCount} com "CO-" removidos)`
-          : '';
-
-        setStatus(
-          `Arquivo "${file.name}" processado com sucesso${extraInfo}.`,
-          'success'
-        );
+        if (!loadedFiles.includes(file.name)) {
+          loadedFiles.push(file.name);
+        }
       } catch (error) {
-        records = [];
-        renderTable();
-        setStatus(error.message || 'Não foi possível ler o arquivo.', 'error');
+        errors.push(`${file.name}: ${error.message || 'falha ao processar'}`);
       }
-    };
+    }
 
-    reader.onerror = () => {
-      setStatus('Erro ao ler o arquivo selecionado.', 'error');
-    };
+    renderTable();
 
-    reader.readAsText(file, 'UTF-8');
+    const coInfo = totalRemovedCo > 0 ? ` | ${totalRemovedCo} com "CO-" removidos` : '';
+    const errInfo = errors.length > 0 ? ` | Avisos: ${errors.join('; ')}` : '';
+
+    if (records.length > 0 || addedCount > 0) {
+      setStatus(
+        `${addedCount} novo(s) registro(s) adicionados. Total acumulado: ${records.length} em ${loadedFiles.length} arquivo(s) (${loadedFiles.join(', ')})${coInfo}${errInfo}.`,
+        errors.length > 0 ? 'error' : 'success'
+      );
+    } else {
+      setStatus(
+        `Nenhum registro válido encontrado${coInfo}${errInfo}.`,
+        'error'
+      );
+    }
+
+    fileInput.value = '';
   }
 
   function downloadJson() {
@@ -484,16 +497,18 @@
   }
 
   fileInput.addEventListener('change', event => {
-    loadFile(event.target.files[0]);
+    loadFiles(event.target.files);
   });
 
   downloadBtn.addEventListener('click', downloadJson);
 
   clearBtn.addEventListener('click', () => {
     records = [];
+    loadedFiles = [];
+    totalRemovedCo = 0;
     fileInput.value = '';
     renderTable();
-    setStatus('Aguardando arquivo KML.');
+    setStatus('Aguardando arquivo(s) KML.');
   });
 
   ['dragenter', 'dragover'].forEach(eventName => {
@@ -513,7 +528,7 @@
   });
 
   dropzone.addEventListener('drop', event => {
-    loadFile(event.dataTransfer.files[0]);
+    loadFiles(event.dataTransfer.files);
   });
 
 })();
