@@ -262,9 +262,9 @@
     </div>
 
     <p class="hint">
-      O arquivo <strong>equipamentos.json</strong> é gerado em UTF-8 com array de objetos
-      contendo <code>equipamento</code>, <code>circuito</code>, <code>latitude</code> e <code>longitude</code>.
-      Registros com <code>CO-</code> no equipamento são removidos automaticamente.
+      Exporta <strong>equipamentos.json</strong> em UTF-8 com <code>equipamento</code>, <code>circuito</code>,
+      <code>latitude</code> e <code>longitude</code>. Remove registros com <code>CO-</code>, simplifica zeros à esquerda
+      (ex.: <code>AA-000001</code> → <code>AA-1</code>) e separa circuitos no formato <code>BBB-0001</code> do nome.
     </p>
 
   </section>
@@ -304,6 +304,40 @@
     return String(equipamento || '').toUpperCase().includes('CO-');
   }
 
+  // Remove zeros à esquerda em identificadores com hífen (ex.: AA-000001 -> AA-1)
+  function stripLeadingZerosFromCode(text) {
+    return String(text || '').replace(
+      /([A-Za-z0-9]+-)0*(\d+)/g,
+      (_, prefix, digits) => `${prefix}${digits}`
+    );
+  }
+
+  // Extrai circuito no padrão 3 letras maiúsculas + até 4 dígitos (ex.: BBB-0001) do <name>
+  // e devolve equipamento simplificado + circuito separado
+  function parseNameAndCircuit(rawName, rawDescription) {
+    const cleanName = String(rawName || '').trim().replace(/\s+/g, ' ');
+    const cleanDesc = String(rawDescription || '').trim();
+
+    const circuitRegex = /\b([A-Z]{3}-\d{1,4})\b/;
+    const match = cleanName.match(circuitRegex);
+
+    let extractedCircuit = '';
+    let equipmentPart = cleanName;
+
+    if (match) {
+      extractedCircuit = match[1];
+      equipmentPart = cleanName
+        .replace(match[0], ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    const equipamento = stripLeadingZerosFromCode(equipmentPart);
+    const circuito = cleanDesc || extractedCircuit;
+
+    return { equipamento, circuito };
+  }
+
   function parseKml(xmlText) {
     const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
 
@@ -316,14 +350,15 @@
     let removedCoCount = 0;
 
     placemarks.forEach((placemark) => {
-      const equipamento = textOf(placemark, 'name');
+      const rawName = textOf(placemark, 'name');
 
-      if (hasCoPrefix(equipamento)) {
+      if (hasCoPrefix(rawName)) {
         removedCoCount++;
         return;
       }
 
-      const circuito = textOf(placemark, 'description');
+      const rawDescription = textOf(placemark, 'description');
+      const { equipamento, circuito } = parseNameAndCircuit(rawName, rawDescription);
 
       const coordinateElements = Array.from(
         placemark.getElementsByTagNameNS('*', 'coordinates')
